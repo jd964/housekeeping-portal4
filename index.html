@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tombstone Grand Hotel – Housekeeping Board</title>
+  <style>
+    :root {
+      --accent: #005ea0;
+      --text: #222;
+      --bg: #fff;
+      --border: #e5e7eb;
+      --running: #22c55e;
+      --idle: #9ca3af;
+      --arrival: #fff7e6;
+      --stayover: #ecfdf5;
+      --departure: #fef2f2;
+    }
+    html,body {
+      margin:0;
+      height:100%;
+      background:var(--bg);
+      color:var(--text);
+      font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    }
+    header {
+      background:var(--accent);
+      color:#fff;
+      padding:16px 24px;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+    }
+    h1 {margin:0;font-size:1.6rem;}
+    #clock {font-weight:600;}
+    main {padding:20px;}
+    .controls {
+      display:flex;
+      gap:10px;
+      align-items:center;
+      margin-bottom:12px;
+      flex-wrap:wrap;
+    }
+    input[type=file]{font-size:0.9rem;}
+    .btn{
+      background:var(--accent);
+      color:#fff;
+      border:none;
+      padding:8px 14px;
+      border-radius:6px;
+      cursor:pointer;
+      font-size:0.9rem;
+    }
+    .btn:hover{background:#00447d;}
+    table{
+      width:100%;
+      border-collapse:collapse;
+      font-size:0.95rem;
+    }
+    th,td{
+      border:1px solid var(--border);
+      padding:8px 6px;
+      text-align:left;
+    }
+    th{background:#f3f4f6;}
+    tr:nth-child(even){background:#fafafa;}
+    .status-arrival{background:var(--arrival);}
+    .status-stayover{background:var(--stayover);}
+    .status-departure{background:var(--departure);}
+    .timer.running{color:var(--running);font-weight:600;}
+    .timer.idle{color:var(--idle);}
+    .summary{
+      margin-top:10px;
+      font-weight:600;
+      font-size:0.95rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Tombstone Grand Hotel – Housekeeping Board</h1>
+    <div id="clock">--:--:--</div>
+  </header>
+  <main>
+    <div class="controls">
+      <input type="file" id="pdfInput" accept=".pdf">
+      <button class="btn" id="exportBtn">Export CSV</button>
+      <span id="attendantLabel"></span>
+    </div>
+    <table id="roomsTable">
+      <thead>
+        <tr>
+          <th>Room</th>
+          <th>Type</th>
+          <th>Occupancy</th>
+          <th>Guest Status</th>
+          <th>HK Status</th>
+          <th>Attendant</th>
+          <th>Timer</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div class="summary" id="summaryTotals"></div>
+  </main>
+<script>
+/* === Clock === */
+function updateClock(){
+  const now=new Date();
+  const h=String(now.getHours()).padStart(2,"0");
+  const m=String(now.getMinutes()).padStart(2,"0");
+  const s=String(now.getSeconds()).padStart(2,"0");
+  document.getElementById("clock").textContent=`${h}:${m}:${s}`;
+}
+setInterval(updateClock,1000);updateClock();
+/* === PDF Upload & SynXis Parsing === */
+const pdfInput = document.getElementById('pdfInput');
+const roomsTable = document.querySelector('#roomsTable tbody');
+const attendantLabel = document.getElementById('attendantLabel');
+const summaryTotals = document.getElementById('summaryTotals');
+const exportBtn = document.getElementById('exportBtn');
+
+let data = [];
+let timers = {};
+
+/* --- Handle PDF Upload --- */
+pdfInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if(!file) return;
+  const pdfjsLib = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.mjs');
+  const buffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: buffer}).promise;
+  let fullText = "";
+  for(let i=1;i<=pdf.numPages;i++){
+    const page = await pdf.getPage(i);
+    const txt = await page.getTextContent();
+    const str = txt.items.map(it=>it.str).join(" ");
+    fullText += str + "\n";
+  }
+  parseSynxis(fullText);
+});
+
+/* --- Parse the SynXis text structure --- */
+function parseSynxis(text){
+  data = [];
+  const attendantParam = new URLSearchParams(window.location.search).get('attendant');
+  const attendants = [...new Set((text.match(/(Hilda|Johana|Kennedy|Mayte|Angie|Elvia)/gi)||[]))];
+  let lines = text.split(/\n|(?=\d{3}\s[A-Z]{2,3}\s)/g)
+  .map(l => l.trim())
+  .filter(l => /^\d{3}\s[A-Z]{2,3}/.test(l));
+
+
+  for(const line of lines){
+    const parts = line.split(/\s+/);
+    const room = parts[0];
+    const type = parts[1]||"";
+    const hkStatus = parts.find(p=>/Dirty|Clean/i.test(p))||"";
+    const occupancy = parts.find(p=>/Vacant|Occupied/i.test(p))||"";
+    const guestStatRaw = line.match(/Stay Over|Departing|Arriving|Checked-out/i);
+    const guestStatus = guestStatRaw ? guestStatRaw[0] : "";
+    const attendant = attendants.find(a=>line.toLowerCase().includes(a.toLowerCase())) || "Unassigned";
+    data.push({room,type,occupancy,guestStatus,hkStatus,attendant});
+  }
+
+  // Filter by attendant if ?attendant= is set
+  if(attendantParam){
+    const name = attendantParam.charAt(0).toUpperCase()+attendantParam.slice(1).toLowerCase();
+    attendantLabel.textContent = `Attendant View – ${name}`;
+    data = data.filter(r=>r.attendant.toLowerCase()===attendantParam.toLowerCase());
+  } else {
+    attendantLabel.textContent = "Manager View – All Rooms";
+  }
+
+  renderTable();
+}
+/* === Render Table & Live Timers === */
+function renderTable(){
+  roomsTable.innerHTML = "";
+  let totals = {arrival:0, stay:0, depart:0};
+  data.forEach((r,i)=>{
+    const tr=document.createElement("tr");
+    tr.dataset.index=i;
+
+    // Row coloring
+    if(/arrival/i.test(r.guestStatus)) tr.classList.add("status-arrival"), totals.arrival++;
+    else if(/stay/i.test(r.guestStatus)) tr.classList.add("status-stayover"), totals.stay++;
+    else if(/depart/i.test(r.guestStatus)) tr.classList.add("status-departure"), totals.depart++;
+
+    tr.innerHTML = `
+      <td>${r.room}</td>
+      <td>${r.type}</td>
+      <td>${r.occupancy}</td>
+      <td>${r.guestStatus}</td>
+      <td>
+        <select class="hkStatus">
+          <option ${/Dirty/i.test(r.hkStatus)?"selected":""}>Dirty</option>
+          <option ${/In Progress/i.test(r.hkStatus)?"selected":""}>In Progress</option>
+          <option ${/Clean/i.test(r.hkStatus)?"selected":""}>Clean</option>
+          <option ${/Inspected/i.test(r.hkStatus)?"selected":""}>Inspected</option>
+        </select>
+      </td>
+      <td>${r.attendant}</td>
+      <td class="timer idle">00:00:00</td>
+    `;
+    roomsTable.appendChild(tr);
+  });
+
+  // update summary
+  summaryTotals.textContent = `Total Rooms: ${data.length} | Arrivals: ${totals.arrival} | Stay Overs: ${totals.stay} | Departures: ${totals.depart}`;
+
+  // Attach listeners
+  document.querySelectorAll(".hkStatus").forEach(sel=>{
+    sel.addEventListener("change",e=>{
+      const tr=e.target.closest("tr");
+      const idx=tr.dataset.index;
+      const timerEl=tr.querySelector(".timer");
+      const val=e.target.value;
+      data[idx].hkStatus=val;
+      if(val==="In Progress") startTimer(timerEl,idx);
+      else if(["Clean","Inspected"].includes(val)) stopTimer(timerEl,idx);
+    });
+  });
+}
+
+/* === Timer Logic === */
+function startTimer(el,idx){
+  if(timers[idx]) return; // already running
+  const start=Date.now();
+  el.classList.remove("idle");
+  el.classList.add("running");
+  timers[idx]=setInterval(()=>{
+    const diff=Date.now()-start;
+    const h=String(Math.floor(diff/3600000)).padStart(2,"0");
+    const m=String(Math.floor((diff%3600000)/60000)).padStart(2,"0");
+    const s=String(Math.floor((diff%60000)/1000)).padStart(2,"0");
+    el.textContent=`${h}:${m}:${s}`;
+  },1000);
+}
+
+function stopTimer(el,idx){
+  if(!timers[idx]) return;
+  clearInterval(timers[idx]);
+  timers[idx]=null;
+  el.classList.remove("running");
+  el.classList.add("idle");
+}
+/* === CSV Export === */
+exportBtn.addEventListener("click",()=>{
+  if(data.length===0){alert("No data to export.");return;}
+  let csv="Room,Type,Occupancy,Guest Status,HK Status,Attendant\n";
+  data.forEach(r=>{
+    csv+=`${r.room},${r.type},${r.occupancy},${r.guestStatus},${r.hkStatus},${r.attendant}\n`;
+  });
+  const blob=new Blob([csv],{type:"text/csv"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;a.download="housekeeping_log.csv";
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+});
+
+/* === Daily Reset at 6 AM === */
+function checkReset(){
+  const last=localStorage.getItem("lastReset");
+  const now=new Date();
+  const today=now.toDateString();
+  const hr=now.getHours();
+  if(last!==today && hr>=6){
+    localStorage.clear();
+    localStorage.setItem("lastReset",today);
+    data=[];timers={};
+    roomsTable.innerHTML="";
+    summaryTotals.textContent="";
+    console.log("Daily reset complete");
+  }
+}
+setInterval(checkReset,60000);
+checkReset();
+
+/* === End of Script === */
+</script>
+</body>
+</html>
