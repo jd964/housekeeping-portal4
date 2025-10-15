@@ -103,6 +103,7 @@
     </table>
     <div class="summary" id="summaryTotals"></div>
   </main>
+
 <script>
 /* === Clock === */
 function updateClock(){
@@ -113,17 +114,16 @@ function updateClock(){
   document.getElementById("clock").textContent=`${h}:${m}:${s}`;
 }
 setInterval(updateClock,1000);updateClock();
+
 /* === PDF Upload & SynXis Parsing === */
 const pdfInput = document.getElementById('pdfInput');
 const roomsTable = document.querySelector('#roomsTable tbody');
 const attendantLabel = document.getElementById('attendantLabel');
 const summaryTotals = document.getElementById('summaryTotals');
 const exportBtn = document.getElementById('exportBtn');
-
 let data = [];
 let timers = {};
 
-/* --- Handle PDF Upload --- */
 pdfInput.addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if(!file) return;
@@ -144,25 +144,27 @@ pdfInput.addEventListener('change', async (e) => {
 function parseSynxis(text){
   data = [];
   const attendantParam = new URLSearchParams(window.location.search).get('attendant');
-  const attendants = [...new Set((text.match(/(Hilda|Johana|Kennedy|Mayte|Angie|Elvia)/gi)||[]))];
-  let lines = text.split(/\n|(?=\d{3}\s[A-Z]{2,3}\s)/g)
-  .map(l => l.trim())
-  .filter(l => /^\d{3}\s[A-Z]{2,3}/.test(l));
 
+  // Auto-detect attendants dynamically (last word per line)
+  const attendants = [...new Set((text.match(/[A-Z][a-z]+(?=\s*$|,)/gm) || []))];
+
+  // Match lines like "100 RM2 Dirty Occupied Stay Over Oct 12 Oct 16 04, Johana"
+  const lines = text.split(/\n|(?=\d{3}\s[A-Z]{2,3}\s)/g)
+    .map(l => l.trim())
+    .filter(l => /^\d{3}\s[A-Z]{2,3}/.test(l));
 
   for(const line of lines){
     const parts = line.split(/\s+/);
     const room = parts[0];
     const type = parts[1]||"";
-    const hkStatus = parts.find(p=>/Dirty|Clean/i.test(p))||"";
+    const hkStatus = parts.find(p=>/Dirty|Clean|In.?Progress/i.test(p))||"";
     const occupancy = parts.find(p=>/Vacant|Occupied/i.test(p))||"";
-    const guestStatRaw = line.match(/Stay Over|Departing|Arriving|Checked-out/i);
+    const guestStatRaw = line.match(/Stay.?Over|Departing|Arriving|Checked.?out/i);
     const guestStatus = guestStatRaw ? guestStatRaw[0] : "";
-    const attendant = attendants.find(a=>line.toLowerCase().includes(a.toLowerCase())) || "Unassigned";
+    const attendant = attendants.find(a=>line.includes(a)) || "Unassigned";
     data.push({room,type,occupancy,guestStatus,hkStatus,attendant});
   }
 
-  // Filter by attendant if ?attendant= is set
   if(attendantParam){
     const name = attendantParam.charAt(0).toUpperCase()+attendantParam.slice(1).toLowerCase();
     attendantLabel.textContent = `Attendant View – ${name}`;
@@ -170,9 +172,9 @@ function parseSynxis(text){
   } else {
     attendantLabel.textContent = "Manager View – All Rooms";
   }
-
   renderTable();
 }
+
 /* === Render Table & Live Timers === */
 function renderTable(){
   roomsTable.innerHTML = "";
@@ -180,8 +182,6 @@ function renderTable(){
   data.forEach((r,i)=>{
     const tr=document.createElement("tr");
     tr.dataset.index=i;
-
-    // Row coloring
     if(/arrival/i.test(r.guestStatus)) tr.classList.add("status-arrival"), totals.arrival++;
     else if(/stay/i.test(r.guestStatus)) tr.classList.add("status-stayover"), totals.stay++;
     else if(/depart/i.test(r.guestStatus)) tr.classList.add("status-departure"), totals.depart++;
@@ -194,7 +194,7 @@ function renderTable(){
       <td>
         <select class="hkStatus">
           <option ${/Dirty/i.test(r.hkStatus)?"selected":""}>Dirty</option>
-          <option ${/In Progress/i.test(r.hkStatus)?"selected":""}>In Progress</option>
+          <option ${/In.?Progress/i.test(r.hkStatus)?"selected":""}>In Progress</option>
           <option ${/Clean/i.test(r.hkStatus)?"selected":""}>Clean</option>
           <option ${/Inspected/i.test(r.hkStatus)?"selected":""}>Inspected</option>
         </select>
@@ -205,10 +205,8 @@ function renderTable(){
     roomsTable.appendChild(tr);
   });
 
-  // update summary
   summaryTotals.textContent = `Total Rooms: ${data.length} | Arrivals: ${totals.arrival} | Stay Overs: ${totals.stay} | Departures: ${totals.depart}`;
 
-  // Attach listeners
   document.querySelectorAll(".hkStatus").forEach(sel=>{
     sel.addEventListener("change",e=>{
       const tr=e.target.closest("tr");
@@ -224,7 +222,7 @@ function renderTable(){
 
 /* === Timer Logic === */
 function startTimer(el,idx){
-  if(timers[idx]) return; // already running
+  if(timers[idx]) return;
   const start=Date.now();
   el.classList.remove("idle");
   el.classList.add("running");
@@ -244,6 +242,7 @@ function stopTimer(el,idx){
   el.classList.remove("running");
   el.classList.add("idle");
 }
+
 /* === CSV Export === */
 exportBtn.addEventListener("click",()=>{
   if(data.length===0){alert("No data to export.");return;}
@@ -270,13 +269,10 @@ function checkReset(){
     data=[];timers={};
     roomsTable.innerHTML="";
     summaryTotals.textContent="";
-    console.log("Daily reset complete");
   }
 }
 setInterval(checkReset,60000);
 checkReset();
-
-/* === End of Script === */
 </script>
 </body>
 </html>
